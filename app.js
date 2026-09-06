@@ -45,7 +45,7 @@ function loadPersisted(){
    counts, pillars per line) and its own plant defaults — nothing
    here is a single global rule shared by every green house.
    ============================================================ */
-const DEFAULT_PLANT_TYPES = ["Lettuce","Basil","Spinach","Kale","Strawberry","Mint"];
+const DEFAULT_PLANT_TYPES = ["Tomato", "Lettuce","Basil","Spinach","Kale","Strawberry","Mint"];
 
 /* No plant, no device install, no override — nothing here assigns
    anything to a single pillar. This is only the catalog of green
