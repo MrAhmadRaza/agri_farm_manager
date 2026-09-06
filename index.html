@@ -53,17 +53,24 @@
       <div id="dashboard-view" style="display:none;"></div>
 
       <div id="config-view" style="display:none;">
-        <p style="color:var(--ink-soft);font-size:13px;max-width:640px;">
+        <p style="color:var(--ink-soft);font-size:13px;max-width:680px;">
           Edit the facility configuration below — project name, each green house's own section/line/pillar
-          structure and default plant, the disease list, severity levels, plant types and device types.
-          Applying a new configuration rebuilds each green house's map from its own settings and carries
-          over existing plant/disease/device data for pillars that still exist afterward. Everything is
-          also saved automatically in this browser, so export your data first if you want a portable backup.
+          structure, its default plant (with section/line overrides), the disease list, severity levels,
+          plant types and device types. Nothing here is random: a pillar's plant comes only from its
+          line → section → green house default, and a pillar only gets a device when a green house's
+          <code class="mono">deviceInstallations</code> list names its exact
+          <code class="mono">section</code> / <code class="mono">line</code> / <code class="mono">pillar</code> —
+          e.g. <code class="mono">{ "deviceTypeId": "ph", "section": 1, "line": 1, "pillar": 1 }</code>.
+          Applying a configuration rebuilds each green house from its own settings, preserves existing
+          plant/disease/device data on pillars that still exist, and gives only genuinely new pillars their
+          configured defaults. Everything is also saved automatically in this browser, so export your data
+          first if you want a portable backup.
         </p>
         <textarea id="config-json" spellcheck="false"></textarea>
         <div class="config-actions">
           <button class="btn btn-primary" id="apply-config-btn">Apply configuration</button>
           <button class="btn btn-ghost" id="reset-config-btn">Reset to default</button>
+          <button class="btn btn-danger-ghost" id="regenerate-config-btn">Regenerate all data from current config</button>
         </div>
         <div class="config-msg" id="config-msg"></div>
       </div>

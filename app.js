@@ -7,7 +7,11 @@
 /* ============================================================
    0. STORAGE
    ============================================================ */
-const STORAGE_KEY = "davaC.hydroponics.data.v1";
+/* Bumped to v2: earlier versions seeded pillars with demo/placeholder
+   plants and devices. Any v1 data left in a browser is intentionally
+   ignored so nobody keeps seeing leftover placeholder data — v2 starts
+   every pillar with nothing until configuration or the user adds it. */
+const STORAGE_KEY = "davaC.hydroponics.data.v2";
 
 function persist(){
   try{
@@ -41,6 +45,17 @@ function loadPersisted(){
    counts, pillars per line) and its own plant defaults — nothing
    here is a single global rule shared by every green house.
    ============================================================ */
+const DEFAULT_PLANT_TYPES = ["Tomato", "Lettuce","Basil","Spinach","Kale","Strawberry","Mint"];
+
+/* No plant, no device install, no override — nothing here assigns
+   anything to a single pillar. This is only the catalog of green
+   houses and their structure (how many sections/lines/pillars exist).
+   A pillar gets a plant or a device only if: (a) you set a default
+   plant on its green house/section/line in Config, (b) you list its
+   exact section/line/pillar under that green house's
+   deviceInstallations in Config, or (c) you add it by hand from the
+   pillar's own panel in the UI. Nothing is ever placed by the code
+   itself as a placeholder or demo value. */
 function makeDefaultGreenHouses(count){
   const list = [];
   for(let g=1; g<=count; g++){
@@ -54,7 +69,8 @@ function makeDefaultGreenHouses(count){
         lineCountOtherSections: 5,
         pillarsPerLine: 7
       },
-      plantOverrides: { sections: {}, lines: {} }
+      plantOverrides: { sections: {}, lines: {} },
+      deviceInstallations: []
     });
   }
   return list;
@@ -83,7 +99,7 @@ const DEFAULT_CONFIG = {
     { id: "light", name: "Grow Light", unit: "hrs/day" },
     { id: "cam", name: "Camera", unit: "" }
   ],
-  plantTypes: ["Lettuce","Basil","Spinach","Kale","Strawberry","Mint"]
+  plantTypes: DEFAULT_PLANT_TYPES
 };
 
 /* ============================================================
@@ -164,66 +180,30 @@ function buildStructure(){
   });
 }
 
-function seedDemoData(ghs){
-  const rand = (n)=>Math.floor(Math.random()*n);
-  ghs.forEach(gh=>{
-    gh.sections.forEach(sec=>{
-      sec.lines.forEach(line=>{
-        line.pillars.forEach(p=>{
-          if(Math.random() < 0.28){
-            const defaultPlant = effectiveLinePlant(gh, sec.number, line.number);
-            const type = defaultPlant || CONFIG.plantTypes[rand(CONFIG.plantTypes.length)];
-            p.plant = { type, plantedDate: randomPastDate(60) };
-          }
-          if(Math.random() < 0.22){
-            const numDevices = 1 + (Math.random()<0.3 ? 1 : 0);
-            const shuffled = [...CONFIG.deviceTypes].sort(()=>Math.random()-0.5);
-            for(let i=0;i<numDevices;i++){
-              const dt = shuffled[i];
-              if(!dt) continue;
-              const deviceId = p.id+"-dev-"+dt.id;
-              p.devices.push({ id: deviceId, typeId: dt.id });
-              const readingCount = 1 + rand(3);
-              for(let r=0;r<readingCount;r++){
-                p.deviceReadings.push({
-                  deviceId: deviceId,
-                  value: sampleReadingValue(dt.id),
-                  unit: dt.unit,
-                  timestamp: randomPastDate(20)
-                });
-              }
-            }
-          }
-          if(Math.random() < 0.09){
-            const dis = CONFIG.diseases[rand(CONFIG.diseases.length)];
-            const sevPool = ["Low","Medium","High"];
-            p.diseaseRecords.push({
-              diseaseId: dis.id,
-              severity: sevPool[rand(sevPool.length)],
-              date: randomPastDate(15),
-              notes: ""
-            });
-          }
-        });
-      });
-    });
-  });
-}
-
-function sampleReadingValue(typeId){
-  switch(typeId){
-    case "ph": return (5.5 + Math.random()*1.5).toFixed(2);
-    case "ec": return (1.2 + Math.random()*1.2).toFixed(2);
-    case "pump": return (2 + Math.random()*6).toFixed(1);
-    case "light": return (12 + Math.random()*6).toFixed(1);
-    case "cam": return "snapshot";
-    default: return (Math.random()*10).toFixed(2);
+/* Applies configuration-driven defaults to a single, brand-new pillar:
+   the plant it inherits from the line/section/greenhouse hierarchy,
+   and any device the green house's config explicitly installs at this
+   exact section/line/pillar location. Nothing here is randomised —
+   the same config always produces the same result. This only ever
+   runs for pillars that don't already have recorded data (see
+   initApp): once a pillar has been touched, its data is preserved
+   as-is across future structure/config changes. */
+function applyPillarDefaults(gh, sec, line, p, ghCfg){
+  const effPlant = effectiveLinePlant(gh, sec.number, line.number);
+  if(effPlant){
+    p.plant = { type: effPlant, plantedDate: todayStr() };
   }
-}
-function randomPastDate(maxDaysAgo){
-  const d = new Date();
-  d.setDate(d.getDate() - Math.floor(Math.random()*maxDaysAgo));
-  return d.toISOString().slice(0,10);
+  const installs = (ghCfg && Array.isArray(ghCfg.deviceInstallations)) ? ghCfg.deviceInstallations : [];
+  installs.forEach(inst=>{
+    if(inst.section===sec.number && inst.line===line.number && inst.pillar===p.number){
+      const dt = deviceType(inst.deviceTypeId);
+      if(!dt) return;
+      const deviceId = p.id+"-dev-"+inst.deviceTypeId+"-cfg";
+      if(!p.devices.find(d=>d.id===deviceId)){
+        p.devices.push({ id: deviceId, typeId: inst.deviceTypeId });
+      }
+    }
+  });
 }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 
@@ -254,32 +234,36 @@ function pillarStatus(pillar){
    ============================================================ */
 function initApp(keepData){
   const newGhs = buildStructure();
-  if(!keepData){
-    seedDemoData(newGhs);
-  } else {
-    // Carry over recorded pillar data where the structure still lines up by id.
-    newGhs.forEach(gh=>{
-      const oldGh = STATE.greenHouses.find(g=>g.id===gh.id);
-      if(!oldGh) return;
-      gh.sections.forEach(sec=>{
-        const oldSec = oldGh.sections.find(s=>s.id===sec.id);
-        if(!oldSec) return;
-        sec.lines.forEach(line=>{
-          const oldLine = oldSec.lines.find(l=>l.id===line.id);
-          if(!oldLine) return;
-          line.pillars.forEach(p=>{
-            const oldP = oldLine.pillars.find(op=>op.id===p.id);
-            if(oldP){
-              p.plant = oldP.plant;
-              p.devices = oldP.devices;
-              p.diseaseRecords = oldP.diseaseRecords;
-              p.deviceReadings = oldP.deviceReadings;
-            }
-          });
+
+  // For every pillar: if it already has recorded data (keepData and an
+  // old pillar with the same id exists), carry that data over exactly
+  // as-is — never overwritten by config. Otherwise it's a brand-new
+  // pillar (first boot, a "regenerate", or growth from a structure
+  // change) and gets its deterministic defaults straight from config:
+  // the inherited plant, and any device config explicitly installs at
+  // its exact section/line/pillar location.
+  newGhs.forEach(gh=>{
+    const ghCfg = CONFIG.greenHouses.find(c=>c.id===gh.id);
+    const oldGh = keepData ? STATE.greenHouses.find(g=>g.id===gh.id) : null;
+    gh.sections.forEach(sec=>{
+      const oldSec = oldGh && oldGh.sections.find(s=>s.id===sec.id);
+      sec.lines.forEach(line=>{
+        const oldLine = oldSec && oldSec.lines.find(l=>l.id===line.id);
+        line.pillars.forEach(p=>{
+          const oldP = oldLine && oldLine.pillars.find(op=>op.id===p.id);
+          if(oldP){
+            p.plant = oldP.plant;
+            p.devices = oldP.devices;
+            p.diseaseRecords = oldP.diseaseRecords;
+            p.deviceReadings = oldP.deviceReadings;
+          } else {
+            applyPillarDefaults(gh, sec, line, p, ghCfg);
+          }
         });
       });
     });
-  }
+  });
+
   STATE.greenHouses = newGhs;
   if(!STATE.greenHouses.length){
     STATE.currentGhId = null;
@@ -881,11 +865,12 @@ document.getElementById("apply-config-btn").addEventListener("click", ()=>{
       if(!gh.plantOverrides) gh.plantOverrides = { sections: {}, lines: {} };
       if(!gh.plantOverrides.sections) gh.plantOverrides.sections = {};
       if(!gh.plantOverrides.lines) gh.plantOverrides.lines = {};
+      if(!Array.isArray(gh.deviceInstallations)) gh.deviceInstallations = [];
     });
     CONFIG = parsed;
     initApp(true);
     msg.className = "config-msg ok";
-    msg.textContent = "Configuration applied. Each green house's structure was rebuilt from its own settings; existing pillar data was preserved where possible.";
+    msg.textContent = "Configuration applied. Each green house's structure was rebuilt from its own settings; existing pillar data was preserved where possible, and any newly-created pillars were given their configured default plant/devices.";
   }catch(err){
     msg.className = "config-msg err";
     msg.textContent = "Could not apply configuration: " + err.message;
@@ -895,6 +880,14 @@ document.getElementById("reset-config-btn").addEventListener("click", ()=>{
   CONFIG = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
   initApp(false);
   renderConfigView();
+});
+document.getElementById("regenerate-config-btn").addEventListener("click", ()=>{
+  const ok = confirm("This clears every recorded plant, device, disease record and reading on every pillar, then rebuilds all green houses purely from the current configuration (default plants + configured device installs). This cannot be undone. Continue?");
+  if(!ok) return;
+  initApp(false);
+  const msg = document.getElementById("config-msg");
+  msg.className = "config-msg ok";
+  msg.textContent = "All green houses were regenerated from the current configuration. Every pillar now reflects only its configured default plant and device installs — nothing random or manually recorded remains.";
 });
 
 /* ============================================================
