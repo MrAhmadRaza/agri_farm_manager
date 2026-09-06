@@ -45,7 +45,7 @@ function loadPersisted(){
    counts, pillars per line) and its own plant defaults — nothing
    here is a single global rule shared by every green house.
    ============================================================ */
-const DEFAULT_PLANT_TYPES = ["Tomato", "Lettuce","Basil","Spinach","Kale","Strawberry","Mint"];
+const DEFAULT_PLANT_TYPES = ["Lettuce","Basil","Spinach","Kale","Strawberry","Mint"];
 
 /* No plant, no device install, no override — nothing here assigns
    anything to a single pillar. This is only the catalog of green
@@ -167,6 +167,7 @@ function buildStructure(){
             id: line.id+"-p"+p,
             number: p,
             plant: null,
+            plantManual: false,
             devices: [],
             diseaseRecords: [],
             deviceReadings: []
@@ -180,30 +181,58 @@ function buildStructure(){
   });
 }
 
-/* Applies configuration-driven defaults to a single, brand-new pillar:
-   the plant it inherits from the line/section/greenhouse hierarchy,
-   and any device the green house's config explicitly installs at this
-   exact section/line/pillar location. Nothing here is randomised —
-   the same config always produces the same result. This only ever
-   runs for pillars that don't already have recorded data (see
-   initApp): once a pillar has been touched, its data is preserved
-   as-is across future structure/config changes. */
-function applyPillarDefaults(gh, sec, line, p, ghCfg){
-  const effPlant = effectiveLinePlant(gh, sec.number, line.number);
-  if(effPlant){
-    p.plant = { type: effPlant, plantedDate: todayStr() };
-  }
+/* Recomputes every pillar's plant from the current green house →
+   section → line hierarchy, live — no rebuild or "regenerate" step
+   needed. A pillar the user has explicitly planted or explicitly
+   cleared by hand (plantManual = true) is left alone; every other
+   pillar always mirrors whatever the hierarchy currently resolves to,
+   including right after you change a default in the UI. */
+function refreshDefaultPlants(gh){
+  gh.sections.forEach(sec=>{
+    sec.lines.forEach(line=>{
+      line.pillars.forEach(p=>{
+        if(p.plantManual) return;
+        const eff = effectiveLinePlant(gh, sec.number, line.number);
+        if(eff){
+          p.plant = { type: eff, plantedDate: (p.plant && p.plant.type===eff) ? p.plant.plantedDate : todayStr() };
+        } else {
+          p.plant = null;
+        }
+      });
+    });
+  });
+}
+
+/* Keeps each pillar's configuration-installed devices (id ends with
+   "-cfg") in sync with the green house's deviceInstallations list,
+   live: adds one the moment its exact section/line/pillar is added
+   to the list, removes it the moment that entry is deleted. A device
+   installed by hand from a pillar's own panel never ends in "-cfg"
+   and this never touches it. */
+function syncConfigDevices(gh, ghCfg){
   const installs = (ghCfg && Array.isArray(ghCfg.deviceInstallations)) ? ghCfg.deviceInstallations : [];
+  const wanted = new Map();
   installs.forEach(inst=>{
-    if(inst.section===sec.number && inst.line===line.number && inst.pillar===p.number){
-      const dt = deviceType(inst.deviceTypeId);
-      if(!dt) return;
-      const deviceId = p.id+"-dev-"+inst.deviceTypeId+"-cfg";
-      if(!p.devices.find(d=>d.id===deviceId)){
-        p.devices.push({ id: deviceId, typeId: inst.deviceTypeId });
-      }
+    const sec = gh.sections.find(s=>s.number===inst.section);
+    const line = sec && sec.lines.find(l=>l.number===inst.line);
+    const pillar = line && line.pillars.find(p=>p.number===inst.pillar);
+    if(!pillar) return;
+    const dt = deviceType(inst.deviceTypeId);
+    if(!dt) return;
+    const deviceId = pillar.id+"-dev-"+inst.deviceTypeId+"-cfg";
+    if(!wanted.has(pillar.id)) wanted.set(pillar.id, new Set());
+    wanted.get(pillar.id).add(deviceId);
+    if(!pillar.devices.find(d=>d.id===deviceId)){
+      pillar.devices.push({ id: deviceId, typeId: inst.deviceTypeId });
     }
   });
+  gh.sections.forEach(sec=>sec.lines.forEach(line=>line.pillars.forEach(p=>{
+    const want = wanted.get(p.id);
+    p.devices = p.devices.filter(d=>{
+      if(!d.id.endsWith("-cfg")) return true;
+      return want && want.has(d.id);
+    });
+  })));
 }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 
@@ -236,12 +265,12 @@ function initApp(keepData){
   const newGhs = buildStructure();
 
   // For every pillar: if it already has recorded data (keepData and an
-  // old pillar with the same id exists), carry that data over exactly
-  // as-is — never overwritten by config. Otherwise it's a brand-new
-  // pillar (first boot, a "regenerate", or growth from a structure
-  // change) and gets its deterministic defaults straight from config:
-  // the inherited plant, and any device config explicitly installs at
-  // its exact section/line/pillar location.
+  // old pillar with the same id exists), carry over its disease records,
+  // readings, and whether its plant is user-controlled — never
+  // overwritten by config. Then, on every pass, plant and configured
+  // devices are (re)synced live from the current configuration for any
+  // pillar that isn't manually controlled — this is what makes changing
+  // a default in the UI show up immediately, with no rebuild needed.
   newGhs.forEach(gh=>{
     const ghCfg = CONFIG.greenHouses.find(c=>c.id===gh.id);
     const oldGh = keepData ? STATE.greenHouses.find(g=>g.id===gh.id) : null;
@@ -253,15 +282,16 @@ function initApp(keepData){
           const oldP = oldLine && oldLine.pillars.find(op=>op.id===p.id);
           if(oldP){
             p.plant = oldP.plant;
+            p.plantManual = !!oldP.plantManual;
             p.devices = oldP.devices;
             p.diseaseRecords = oldP.diseaseRecords;
             p.deviceReadings = oldP.deviceReadings;
-          } else {
-            applyPillarDefaults(gh, sec, line, p, ghCfg);
           }
         });
       });
     });
+    refreshDefaultPlants(gh);
+    syncConfigDevices(gh, ghCfg);
   });
 
   STATE.greenHouses = newGhs;
@@ -501,6 +531,12 @@ function renderPillarModal(){
         </div>
         <button class="btn btn-primary btn-sm" id="add-plant-btn">Add plant</button>
       `}
+      ${pillar.plantManual ? `
+        <div style="margin-top:10px;font-size:11px;color:var(--ink-faint);">
+          Set manually — no longer following the section/line default.
+          <button class="btn btn-ghost btn-sm" id="follow-default-btn" style="margin-left:4px;">Follow default again</button>
+        </div>
+      ` : ""}
     </div>`;
 
   const availableDeviceTypes = CONFIG.deviceTypes;
@@ -596,12 +632,22 @@ function renderPillarModal(){
       type: document.getElementById("new-plant-type").value,
       plantedDate: document.getElementById("new-plant-date").value || todayStr()
     };
+    pillar.plantManual = true;
     persist();
     renderModal(); renderMap();
   });
   const removePlantBtn = document.getElementById("remove-plant-btn");
   if(removePlantBtn) removePlantBtn.addEventListener("click", ()=>{
     pillar.plant = null;
+    pillar.plantManual = true;
+    persist();
+    renderModal(); renderMap();
+  });
+  const followDefaultBtn = document.getElementById("follow-default-btn");
+  if(followDefaultBtn) followDefaultBtn.addEventListener("click", ()=>{
+    pillar.plantManual = false;
+    const eff = effectiveLinePlant(gh, sec.number, line.number);
+    pillar.plant = eff ? { type: eff, plantedDate: todayStr() } : null;
     persist();
     renderModal(); renderMap();
   });
